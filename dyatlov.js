@@ -124,6 +124,10 @@ Dyatlov.prototype = {
 			gps: function() {
 				return (this.parsed.gps_fpm > 0);
 			},
+			// Software version and features
+			sw_ver: function() {
+				return (this.raw.sdr_hw && this.raw.sdr_hw.startsWith('KiwiSDR ') && this.raw.sdr_hw.substr(8));
+			},
 			// Check if live recently and still relevant
 			// (less than 10 days of downtime)
 			recent: function() {
@@ -219,6 +223,8 @@ Dyatlov.prototype = {
 					lines.push('S/N score: ' + this.snr.toFixed(2) + ' dB');
 				if (this.gps())
 					lines.push('GPS clock available: ' + this.parsed.gps_fpm + ' fixes/min');
+				if (this.sw_ver())
+				   lines.push(this.sw_ver());
 
 				return lines.join('\n');
 			},
