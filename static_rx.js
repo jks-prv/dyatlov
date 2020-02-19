@@ -12,19 +12,11 @@ var static_rx = [
 		antenna: 'Mini-Whip',
 	},
 	{
-		name: '2-8 MHz WebSDR, Silec, Poland',
+		name: '2-16 MHz WebSDR, Silec, Poland',
 		url: 'http://websdr.printf.cc:8901/',
 		gps: '(54.1605231, 21.5543704)',
-		bands: '2000000-8000000',
+		bands: '2000000-16000000',
 		users_max: '20',
 		antenna: '30m random wire',
-	},
-	{
-		name: '0-7.6 MHz OpenWebRX SDR, OH2EAT, Finland (with 4-minute history buffer)',
-		url: 'http://sdr.dy.fi/',
-		gps: '(60.940055, 25.990486)',
-		bands: '0-7600000',
-		users_max: '20',
-		antenna: 'Inverted L',
 	},
 ];

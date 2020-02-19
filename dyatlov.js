@@ -1,19 +1,22 @@
 // Dyatlov map maker
-// Copyright 2018, 2020 Pierre Ynard
+// Copyright 2017, 2018, 2020 Pierre Ynard
 // Licensed under GPLv3+
 
 // Helper variable for inline class declaration
 var C;
 
-// Dyatlov map maker class: creates a Google API map and lists receiver
-// objects to place them as markers on the map
-var Dyatlov = function(element_id) {
-	this.map = this.create_map(element_id);
-	this.bubbles = [];
+// Dyatlov map maker class: creates a world map using the given toolkit
+// and lists receiver objects to place as markers on it
+var Dyatlov = function(element_id, toolkit, config) {
+	var map_module;
+	if (toolkit)
+		map_module = this.maps[toolkit];
+	if (map_module == null)
+		map_module = this.detect_toolkit();
+
+	this.map = new map_module(element_id, config);
 	this.grid = {};
-	this.receivers().map(function(rx) {
-		return rx.attach(this);
-	}, this);
+	this.receivers().forEach(this.add_marker, this);
 };
 
 Dyatlov.prototype = {
@@ -23,7 +26,6 @@ Dyatlov.prototype = {
 			this.raw = data;
 			this.parsed = {
 				bandwidth: this.bandwidth(),
-				coords: this.coords(),
 				gps_fpm: this.parse_number(this.raw.fixes_min),
 				updated: this.parse_date(this.raw.updated),
 				users: {
@@ -39,8 +41,6 @@ Dyatlov.prototype = {
 				return {};
 
 			this.title = this.marker_title();
-			this.marker = this.create_marker();
-			this.bubble = this.create_bubble();
 		},
 		C.prototype = {
 			xml_escape: function(text) {
@@ -54,6 +54,10 @@ Dyatlov.prototype = {
 				return text.replace(/[&<>"']/g, function(c) {
 					return xml_entities[c];
 				});
+			},
+			printf_02X: function(n) {
+				var x = Number(n).toString(16).toUpperCase();
+				return x.length < 2 ? '0' + x : x;
 			},
 			parse_number: function(val) {
 				if (val == null || val == '')
@@ -229,54 +233,250 @@ Dyatlov.prototype = {
 				if (! avail)
 					return 'FFFF6E'; // Yellow
 
-				// TODO: color scale based on reception quality
-				return 'FD7567';
+				var q = this.quality();
+				if (q == null)
+					return '807567'; // Gray
+
+				// Shades of red - brightness and
+				// vividness scale with quality
+				var r = this.printf_02X(Math.round(255 * q) + 0);
+				var g = this.printf_02X(Math.round(64 * q) + 53);
+				var b = this.printf_02X(Math.round(48 * q) + 55);
+				return (r + g + b);
 			},
 			// Color-coded icon URL to use as marker on the map
 			marker_icon: function() {
 				return 'https://chart.apis.google.com/chart?chst=d_map_pin_letter&chld=%E2%80%A2%7C' + this.marker_color();
 			},
+			// Size of marker icon, for positioning purposes
+			marker_icon_size: function() {
+				return {
+					width: 21,
+					height: 34,
+				};
+			},
 			// HTML content of marker info bubble
 			bubble_HTML: function() {
 				return '<a href="' + this.xml_escape(this.raw.url) + '" style="color:teal;font-weight:bold;text-decoration:none" title="' + this.xml_escape(this.title) + '">' + this.xml_escape(this.raw.name) + '</a>';
 			},
-			// Create a Google API marker object for this receiver
-			create_marker: function() {
-				return new google.maps.Marker({
-					title: this.title, // XML-encoded by Marker code
-					position: new google.maps.LatLng(this.parsed.coords),
-					zIndex: google.maps.Marker.MAX_ZINDEX +
-					        Math.round(65536 * this.precedence()),
-					icon: this.marker_icon(),
-				});
-			},
-			// Create a Google API info bubble object for the
-			// marker of this receiver
-			create_bubble: function() {
-				return new google.maps.InfoWindow({
-					content: this.bubble_HTML(),
-				});
-			},
-			// Attach receiver to map
-			attach: function(map_maker) {
-				var pos = this.marker.getPosition();
-				var coords = {
-					lat: pos.lat(),
-					lng: pos.lng(),
-				};
-				map_maker.distinct_marker(coords);
-				this.marker.setPosition(coords);
-
-				map_maker.bubbles.push(this.bubble);
-				var rx = this;
-				this.marker.addListener('click', function() {
-					map_maker.clear_bubbles();
-					rx.bubble.open(map_maker.map, rx.marker);
-				});
-				this.marker.setMap(map_maker.map);
-			},
 		},
 	C),
+	// Modular classes implementing a map component interface through
+	// alternative supported map library APIs. Implementations can
+	// make optional use of a specific configuration argument, and
+	// should provide an add_marker() interface to place receivers
+	// on the map.
+	maps: {
+		// Google Maps API - documented at
+		// https://developers.google.com/maps/documentation/javascript/tutorial
+		GoogleMaps: (
+			// Create and set up Google API map object
+			C = function(element_id, config) {
+				this.map = new google.maps.Map(document.getElementById(element_id), {
+					mapTypeId: 'hybrid',
+					scaleControl: true,
+				});
+				// Arbitrary area of interest,
+				// should suffice and work well
+				this.map.fitBounds({
+					north: 70,
+					south: -60,
+					west: -180,
+					east: 180,
+				});
+
+				// Overlay day/night separation on the map,
+				// if an implementation was loaded.
+				// DayNightOverlay API implementation available
+				// at https://github.com/marmat/google-maps-api-addons
+				if (typeof DayNightOverlay == 'function') {
+					new DayNightOverlay({
+						map: this.map,
+					});
+				}
+				// nite API implementation available at
+				// https://github.com/rossengeorgiev/nite-overlay
+				else if (typeof nite == 'object' && nite &&
+				         typeof nite.init == 'function') {
+					nite.init(this.map);
+				}
+
+				this.bubbles = [];
+			},
+			C.prototype = {
+				// Add receiver as marker onto map
+				add_marker: function(rx, coords) {
+
+					var marker = new google.maps.Marker({
+						title: rx.title, // XML-encoded by Marker code
+						position: new google.maps.LatLng(coords),
+						zIndex: google.maps.Marker.MAX_ZINDEX +
+						        Math.round(65536 * rx.precedence()),
+						icon: rx.marker_icon(),
+					});
+
+					var bubble = new google.maps.InfoWindow({
+						content: rx.bubble_HTML(),
+					});
+					this.bubbles.push(bubble);
+
+					var t = this; // For closure below
+					marker.addListener('click', function() {
+						t.bubbles.forEach(function(bub) {
+							bub.close();
+						});
+						bubble.open(t.map, marker);
+					});
+
+					marker.setMap(this.map);
+				},
+			},
+		C),
+		// Leaflet interactive map library API
+		// Implementation available at https://leafletjs.com/
+		// An optional list of tilesets with hosting provider
+		// configuration is accepted
+		Leaflet: (
+			// Create and set up Leaflet map object
+			C = function(element_id, config) {
+				this.map = L.map(element_id);
+				// Arbitrary area of interest,
+				// should suffice and work well
+				this.map.fitBounds([
+					[ 70, -180 ],
+					[ -60, 180 ],
+				]);
+				L.control.scale().addTo(this.map);
+
+				// Overlay day/night separation on the map,
+				// if an implementation was loaded.
+				// L.terminator API implementation available at
+				// https://github.com/joergdietrich/Leaflet.Terminator
+				if (typeof L.terminator == 'function') {
+					var terminator = L.terminator({
+						// Disable "clickable" pointer
+						// mouse cursor over overlay
+						interactive: false,
+					});
+					var interactions = [
+						'viewreset',
+						'zoomstart',
+						'movestart',
+						'popupopen',
+						'popupclose',
+						'baselayerchange',
+					];
+					this.map.addEventListener(interactions.join(' '), function(e) {
+						terminator.setTime();
+					});
+					terminator.addTo(this.map);
+				}
+
+				var tilesets = config;
+				if (tilesets == null) {
+					// Default tile provider is
+					// OpenStreetMap
+					tilesets = [
+						{
+							label: 'Map',
+							url: 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
+							attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
+						},
+					];
+				}
+
+				var tslayers = tilesets.map(function(tileset) {
+					return {
+						label: tileset.label,
+						layer: L.tileLayer(tileset.url, {
+							attribution: tileset.attribution,
+						}),
+					};
+				});
+				if (tslayers.length > 0)
+					tslayers[0].layer.addTo(this.map);
+
+				// If several tilesets are configured, add
+				// a control switch onto the map to toggle
+				// between them; Leaflet's switch will
+				// require the images/layers[-2x].png icons.
+				if (tslayers.length > 1) {
+					var control = L.control.layers({}, {});
+					tslayers.forEach(function(tileset) {
+						this.addBaseLayer(tileset.layer, tileset.label);
+					}, control);
+					control.addTo(this.map);
+				}
+			},
+			C.prototype = {
+				// Add receiver as marker onto map
+				add_marker: function(rx, coords) {
+					var size = rx.marker_icon_size();
+					var icon = L.icon({
+						iconUrl: rx.marker_icon(),
+						iconSize: [
+							size.width,
+							size.height,
+						],
+						iconAnchor: [ // Center bottom
+							Math.round(size.width / 2) - 1,
+							size.height,
+						],
+						popupAnchor: [ // Center top
+							0,
+							- (size.height + 1),
+						],
+					});
+
+					var marker = L.marker(coords, {
+						title: rx.title, // XML-encoded by marker code
+						zIndexOffset: Math.round(65536 * rx.precedence()),
+						icon: icon,
+					});
+
+					marker.bindPopup(rx.bubble_HTML());
+
+					marker.addTo(this.map);
+				},
+			},
+		C),
+		// Built-in stub implementation, requiring no separate
+		// library or setup. This doesn't actually provide any map,
+		// but lists available receivers as a fallback.
+		Builtin: (
+			// Set up HTML to list receivers
+			C = function(element_id, config) {
+				this.ul = document.createElement('ul');
+				var el = document.getElementById(element_id);
+				el.innerHTML = '<p>Welcome to this wideband shortwave radio receiver map! If you are seeing this, the necessary map resources have not been fully set up by the administrator of this website, or your browser could not access them.</p><p>You can still browse below a list of receivers that would normally be displayed as markers on an interactive world map.</p>';
+				el.appendChild(this.ul);
+			},
+			C.prototype = {
+				// Add receiver to HTML list
+				add_marker: function(rx, coords) {
+					var li = document.createElement('li');
+					li.setAttribute('style', "list-style-image: url('" + rx.marker_icon() + "');");
+					li.innerHTML = rx.bubble_HTML();
+					this.ul.appendChild(li);
+				},
+			},
+		C),
+	},
+	// Select map service implementation based on which toolkit API
+	// is loaded and available
+	detect_toolkit: function(element_id) {
+		// Give precedence to Leaflet because, coupled with
+		// OpenStreetMap, it is free and registration-free
+		if (typeof L == 'object' && L &&
+		    typeof L.map == 'function') {
+			return this.maps.Leaflet;
+		} else if (typeof google == 'object' && google &&
+		           typeof google.maps == 'object' && google.maps &&
+		           typeof google.maps.Map == 'function') {
+			return this.maps.GoogleMaps;
+		} else
+			return this.maps.Builtin;
+	},
 	// Shift coordinates to ensure marker is sufficiently distinct
 	// from others to be distinctly seen and used
 	distinct_marker: function(coords) {
@@ -317,45 +517,14 @@ Dyatlov.prototype = {
 			// If this receiver data is rejected, an empty object
 			// is returned instead, so filter these afterwards
 		}, this).filter(function(rx) {
-			return (rx.attach != null);
+			return (rx.bubble_HTML != null);
 		});
 	},
-	// Create and set up the Google API map object
-	create_map: function(element_id) {
-		var map = new google.maps.Map(document.getElementById(element_id), {
-			mapTypeId: 'hybrid',
-		});
-		// Arbitrary area of interest, should suffice and work well
-		map.fitBounds({
-			north: 70,
-			south: -60,
-			west: -180,
-			east: 180,
-		});
-
-		// Overlay day/night separation on the map, if an
-		// implementation was loaded.
-		// DayNightOverlay API implementation available at
-		// https://github.com/marmat/google-maps-api-addons
-		if (typeof DayNightOverlay == "function") {
-			new DayNightOverlay({
-				map: map,
-			});
-		}
-		// nite API implementation available at
-		// https://github.com/rossengeorgiev/nite-overlay
-		else if (typeof nite == "object" && nite &&
-		         typeof nite.init == "function") {
-			nite.init(map);
-		}
-
-		return map;
-	},
-	// Clear all info bubbles of all markers
-	clear_bubbles: function() {
-		this.bubbles.forEach(function(bubble) {
-			bubble.close();
-		});
+	// Add receiver as marker onto map
+	add_marker: function(rx) {
+		var coords = rx.coords();
+		this.distinct_marker(coords);
+		this.map.add_marker(rx, coords);
 	},
 };
 
